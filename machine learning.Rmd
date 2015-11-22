@@ -252,7 +252,7 @@ results_test <-rbind(
 colnames(results_test) <- c("Method", "Accuracy")
 
 # export results to table
-tab_Q2 <-xtable(results_test, caption = "random forest results by fold")
+tab_Q2 <-xtable(results_test, caption = "Random forest results by fold")
 print(tab_Q2, floating=TRUE, caption.placement="top", type="html")
 ```
 
