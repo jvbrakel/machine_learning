@@ -1,0 +1,297 @@
+---
+title: "Machine Learning - Human Activity Recognition"
+author: "Joost van Brakel"
+date: "November 20, 2015"
+output: html_document
+---
+
+# Executive summary
+
+Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community (see picture below, that illustrates the increasing number of publications in HAR with wearable accelerometers), especially for the development of context-aware systems. There are many potential applications for HAR, like: elderly monitoring, life log systems for monitoring energy expenditure and for supporting weight-loss programs, and digital assistants for weight lifting exercises.
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3s7lvMhWN
+
+We utilized the knowledge generated from the paper above and focused on evluating four methods and random forest method provided most accurate report, which accurancy in the 99%
+
+
+# Process
+For this analysis we used R and a number of key libraries, namely : xtable, AppliedPredictiveModeling, caret, randomForest, rpart, knitr,htmlTable and doMC
+
+```{r echo = FALSE, message=F, warning=F}
+require(xtable)
+require(ggplot2)
+library(AppliedPredictiveModeling)
+library(caret)
+library(randomForest)
+ library(htmlTable)
+library(rpart)
+library(doMC)
+library(knitr)
+
+registerDoMC()
+```
+# Data
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throw- ing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). 
+
+
+
+```{r echo = FALSE}
+jvb.chartd <- function(x, ...) {
+      # draws density histogram
+      hist(x,freq=FALSE, col="grey", ...)
+      rug(x)  
+      # calculate mean and standard deviation
+      mn <- mean(x)
+      stdev <- sd(x)
+      # draw normal distribution as comparison
+      curve(dnorm(x, mean = mn, sd= stdev), add=TRUE, col="blue", lty="dotted", xaxt="n")
+      # add line for mean
+      abline(v=mn,col="red")
+      # add mean, and standard deviation to chart
+      mtext(paste("mean ", round(mn,2), "; sd ", round(stdev,2), "; N ", 
+                        length(x),sep=""), side=1, cex=.75)
+}
+
+jvb.chartf <- function(v, ...) {     
+      hcum2 <- h2 <- hist(v, plot=FALSE)
+      plot(hcum2, ...)
+      plot(h2, add=T, col="grey")
+       # add line for mean
+      abline(v=mean(v),col="red")
+      rug(v)      
+       # calculate mean and standard deviation
+      mn <- mean(v)
+      stdev <- sd(v)
+      ## Plot the density and cumulative density
+      d <- density(v)
+      lines(x = d$x, y = d$y * length(v) * diff(h2$breaks)[1], lwd = 2)
+      # add mean, and standard deviation to chart
+      mtext(paste("mean ", round(mean(v),2), "; sd ", round(sd(v),2),sep=""), side=1, cex=.75)
+}
+
+jvb.description <- function(v, id, ...) {
+      # generate list with mean, variance, n and standard deviation
+      return (list(id, mean(v) , var(v), length(v),  sd(v)))
+}
+
+jvb.rsquare <- function (id, res, ...){
+   
+      rsq <- round(summary(res)$r.squared,4)
+      adjrsq <- round(summary(res)$adj.r.squared,4)
+     
+      return (list(id, rsq ,adjrsq))
+      
+}
+
+jvb.test  <- function (id, v0, v1, ...){
+      # perform 2 way t test
+      results <- t.test(v0 ,  v1, ...)
+      # capture key outputs such as df, p, t
+      df <-(results$parameter)
+      p <- (results$p.value)
+      t <- (results$statistic)
+      lower <- qt(.025, df)
+      upper <- qt(.975, df)
+      # determine if p is passing, less than 0.05
+      if (p < 0.05 ){
+           p_outcome <- "pass"
+       }else { 
+             p_outcome <- "fail" 
+      }
+       # determine if t is within the confidence interval
+      if (lower < t & t < upper ){
+           t_outcome <- "fail"
+       }else { 
+             t_outcome <- "pass" 
+      }
+      # return results
+      return (list(id, df , t, p,p_outcome,  t_outcome,lower, upper))
+}
+
+## Creates a data frame with three columns: index, ColumnName and
+## FractionMissing.
+## index is the column index in df corresponding to ColumnName
+## ColumnName is as the name implies: the name the column in df
+## FractionMissing is the fraction of values that are missing or NA.
+## The closer this value is to 1, the less data the column contains
+getFractionMissing <- function(df = rawActitivity) {
+    colCount <- ncol(df)
+    returnDf <- data.frame(index=1:ncol(df),
+                           columnName=rep("undefined", colCount),
+                           FractionMissing=rep(-1, colCount),
+                           stringsAsFactors=FALSE)
+    for(i in 1:colCount) {
+        colVector <- df[,i]
+        missingCount <- length(which(colVector == "") * 1)
+        missingCount <- missingCount + sum(is.na(colVector) * 1)
+        returnDf$columnName[i] <- as.character(names(df)[i])
+        returnDf$FractionMissing[i] <- missingCount / length(colVector)
+    }
+
+    return(returnDf)
+}
+
+```
+
+# Processing
+The columns were reviewed to determine if there was usuable data present, if less than 90% of the rows has useable data the column was removed, if no valide model can be build we can revisit this approach. For this we used a function called 'getFractionMissing' which is available within the forums. we also reviewed the test set and see which column had data in it, this allowed us to focus on the relevant columns and reduce computing time.
+
+The training dataset was split in to 70% training, 30% validation
+
+```{r cache = TRUE}
+URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(URL, destfile = "pml-training.csv", method="curl")
+
+URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(URL, destfile = "pml-testing.csv", method="curl")
+
+training <- read.csv("pml-training.csv",na.strings = "NA")
+testing <- read.csv("pml-testing.csv",na.strings = "NA")
+
+training[,7:159] <- sapply(training[,7:159],as.numeric) 
+testing[,7:159] <- sapply(testing[,7:159], as.numeric) 
+
+# remove columns that will not be used in prediction
+training <- training[8:160]
+testing <- testing[8:160]
+
+# remove na columns in testing set from both testing and training.
+nas <- is.na(apply(testing,2,sum))
+testing <- testing[,!nas]
+training <- training[,!nas]
+
+
+colDesc <- getFractionMissing(training)
+filteredCol <- colDesc[colDesc$FractionMissing < .9,1]
+training2 <- training[,filteredCol]
+testing2 <- testing[,filteredCol]
+
+set.seed(1313)
+# divide training set in training and validation
+inTrain <- createDataPartition(y=training2$classe, p=0.7, list=FALSE)
+trainSet <- training2[inTrain,]
+valSet <- training2[-inTrain,]
+
+```
+
+# Modeling performance, selection and validation
+Based on the previous analysis performed on this dataset, which was documented with the attached link, this dataset best responds to tree based predictions.
+
+To determine the best modeling approach we examined 4 approaches <br>
+1. Recursive Partitioning and Regression Trees results (rpart) <br>
+2. Random Forest (rf) <br>
+3. Generalized Boosted Models (gbm) <br>
+4. Treebag (treebag) <br>
+
+We used A 3-fold cross-validation to estimate the out of sample error, we tried a number of folds, we provided the comparison below between 2,3 and 4 folD, no material difference existed therefore we selected the midde option (3 fold)
+
+
+```{r cache = TRUE, results="asis"}
+# model - Recursive Partitioning and Regression Trees
+modRPATFit <- train(classe ~.,data=trainSet, method="rpart")
+pred0 <- predict(modRPATFit, newdata = valSet)
+cm0 <- confusionMatrix(pred0, valSet$classe)
+
+#model -  Random Forest
+modelRFFit <- train(classe ~., data=trainSet, method="rf",na.action = na.omit, allowParallel=TRUE, trControl = trainControl(method = "cv", number = 3, allowParallel = TRUE))
+pred1 <- predict(modelRFFit, newdata = valSet)
+cm1 <- confusionMatrix(pred1, valSet$classe)
+
+#model -  Generalized Boosted Models 
+modelGBMFit <- train(classe ~., data=trainSet, method="gbm",na.action = na.omit, trControl = trainControl(method = "cv", number = 3),verbose = FALSE)
+pred2 <- predict(modelGBMFit, newdata = valSet)
+cm2 <- confusionMatrix(pred2, valSet$classe)
+
+#model -  treebag
+modelBAGFit <- train(classe ~., data=trainSet, method="treebag",na.action = na.omit, trControl = trainControl(method = "cv", number = 3),verbose = FALSE)
+pred3 <- predict(modelBAGFit, newdata = valSet)
+cm3 <- confusionMatrix(pred3, valSet$classe)
+
+results_test <-rbind(
+      list("rpart", cm0$overall[1]),
+      list("rf", cm1$overall[1]),
+      list("gbm", cm2$overall[1]),
+      list ("treebag",cm3$overall[1])
+)
+
+# added readable column headers      
+colnames(results_test) <- c("Method", "Accuracy")
+
+# export results to table
+tab_Q1 <-xtable(results_test, caption = "Results by method")
+print(tab_Q1, floating=TRUE, caption.placement="top", type="html")
+
+#model -  Random Forest - 2-fold Cross validatio
+modelRFFit1 <- train(classe ~., data=trainSet, method="rf",na.action = na.omit, allowParallel=TRUE, trControl = trainControl(method = "cv", number = 2, allowParallel = TRUE))
+pred1a <- predict(modelRFFit1, newdata = valSet)
+cm1a <- confusionMatrix(pred1a, valSet$classe)
+
+#model -  Random Forest - 4-fold Cross validatio
+modelRFFit2 <- train(classe ~., data=trainSet, method="rf",na.action = na.omit, allowParallel=TRUE, trControl = trainControl(method = "cv", number = 4, allowParallel = TRUE))
+pred1b <- predict(modelRFFit2, newdata = valSet)
+cm1b <- confusionMatrix(pred1b, valSet$classe)
+
+results_test <-rbind(      
+      list("2-fold", cm1a$overall[1]),
+      list("3-fold", cm1$overall[1]),
+      list("4-fold",cm1b$overall[1])
+)
+
+# added readable column headers      
+colnames(results_test) <- c("Method", "Accuracy")
+
+# export results to table
+tab_Q2 <-xtable(results_test, caption = "random forest results by fold")
+print(tab_Q2, floating=TRUE, caption.placement="top", type="html")
+```
+
+# Predictions 
+
+The RF methods provides the strongest test on an accuracy basis, if we look at the figures below, you can see in the confusion Matrix, that the larges out of sample error is within D, which means that D will be the most challenging to forecast
+
+```{r }
+varImp(modelRFFit)
+```
+
+
+```{r results="asis" }
+
+plot(modelRFFit)
+plot(varImp(modelRFFit), top = 10)
+
+tab_Q3 <-xtable(cm1$table, caption = "final results - confusion matrix")
+print(tab_Q3, floating=TRUE, caption.placement="top", type="html")
+
+```
+
+```{r }
+cm1
+```
+
+# Forecasting
+Utilizing the result set to forecast based on the 'testing' dataset. This resulted in a 100% accurate result.
+
+```{r results="asis", echo=FALSE }
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+predRes <- predict(modelRFFit, newdata = testing2)
+pml_write_files(predRes)
+
+```
